@@ -118,7 +118,8 @@ S.f = Math.min(Math.max(S.f | 0, 0), 3); S.res = Math.min(Math.max(S.res | 0, 0)
 S.gain = Math.min(Math.max(+S.gain || 1, 0.4), 3); S.con = Math.min(Math.max(+S.con || 1.2, 0.5), 3);
 
 let mode = 'init', frozen = false, stream = null, w = 0, h = 0, autoIdx = 1, ema = 8, cool = 0;
-let g, val, outImg, o, lut = new Uint8Array(256), grids = null;
+let g, val, bp, outImg, o32, tcol, bcol, lut = new Uint8Array(256), grids = null, vfNew = true, vfOn = false, lastSim = 0;
+const RVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype, AUTO_T = [240, 320, 480, 640];
 let frames = 0, fpsT = performance.now(), fpsV = 0, sensor = false, orient = { p: 0, r: 0, a: 0 }, lastHud = 0;
 
 /* ---------- Utilidades de UI ---------- */
@@ -129,7 +130,7 @@ $('banner').addEventListener('click', () => banner(''));
 function chip(id, cls, txt) { const e = $(id); e.className = 'chip' + (cls ? ' ' + cls : ''); e.lastElementChild.textContent = txt; }
 
 /* ---------- Service Worker (Cache-First) ---------- */
-const SW_SRC = "const C='nightoptic-v1';const A=['./','./index.html'];" +
+const SW_SRC = "const C='nightoptic-v2';const A=['./','./index.html'];" +
   "self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>c.addAll(A)).catch(()=>{}).then(()=>self.skipWaiting()));});" +
   "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==C).map(x=>caches.delete(x)))).then(()=>self.clients.claim()));});" +
   "self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(caches.match(e.request,{ignoreSearch:true}).then(h=>h||fetch(e.request).then(r=>{if(r&&r.ok&&new URL(e.request.url).origin===self.location.origin){const cp=r.clone();caches.open(C).then(c=>c.put(e.request,cp));}return r;}).catch(()=>e.request.mode==='navigate'?caches.match('./index.html'):Response.error())));});";
@@ -159,7 +160,7 @@ function download(blob, name) {
 $('bSw').addEventListener('click', () => { download(new Blob([SW_SRC], { type: 'text/javascript' }), 'sw.js'); toast('sw.js exportado'); });
 
 /* ---------- Paletas y LUT ---------- */
-function pal(r, gg, b) { const t = [new Uint8Array(256), new Uint8Array(256), new Uint8Array(256)]; for (let i = 0; i < 256; i++) { t[0][i] = i * r; t[1][i] = i * gg; t[2][i] = i * b; } return t; }
+function pal(r, gg, b) { const t = new Uint32Array(256); for (let i = 0; i < 256; i++) t[i] = ((255 << 24) | (((i * b) | 0) << 16) | (((i * gg) | 0) << 8) | ((i * r) | 0)) >>> 0; return t; }
 const PALS = [pal(1, .94, .72), pal(1, .69, 0), pal(.45, 1, .4), pal(1, .28, .1), pal(.2, 1, .7)];
 function buildLut() {
   for (let i = 0; i < 256; i++) { const v = ((i / 255 - .5) * S.con + .5) * S.gain * 255; lut[i] = v < 0 ? 0 : v > 255 ? 255 : v; }
@@ -173,42 +174,49 @@ function mkGrid(n, N) {
 }
 const TX = 8, TY = 6, BX = 16, BY = 12, CLIP = 3;
 const HIST = new Int32Array(TX * TY * 256), CNT = new Int32Array(TX * TY), TLUT = new Uint8Array(TX * TY * 256);
+const HS = new Int32Array(256), TB = new Uint8Array(256), BSUM = new Float32Array(BX * BY), BCN = new Int32Array(BX * BY), ROWV = new Float32Array(BX);
 function setSize(nw, nh) {
   w = nw; h = nh; buf.width = w; buf.height = h; view.width = w; view.height = h;
-  g = new Uint8Array(w * h); val = new Uint8Array(w * h); outImg = new ImageData(w, h); o = outImg.data;
-  for (let i = 3; i < o.length; i += 4) o[i] = 255;
+  g = new Uint8Array(w * h); val = new Uint8Array(w * h); bp = new Int16Array(w * h);
+  outImg = new ImageData(w, h); o32 = new Uint32Array(outImg.data.buffer);
+  tcol = new Uint8Array(w); bcol = new Uint8Array(w);
+  for (let x = 0; x < w; x++) { tcol[x] = (x * TX / w) | 0; bcol[x] = (x * BX / w) | 0; }
   grids = { tx: mkGrid(w, TX), ty: mkGrid(h, TY), bx: mkGrid(w, BX), by: mkGrid(h, BY) };
 }
 function target() {
   const vw = (mode === 'cam' && video.videoWidth) || 640, vh = (mode === 'cam' && video.videoHeight) || 480;
-  const long = S.res === 3 ? RES[autoIdx].s : RES[S.res].s, k = long / Math.max(vw, vh);
+  const long = S.res === 3 ? AUTO_T[autoIdx] : RES[S.res].s, k = long / Math.max(vw, vh);
   return [Math.max(16, Math.round(vw * k)), Math.max(16, Math.round(vh * k))];
 }
 
 /* ---------- Filtros ---------- */
 function fBlackHot() {
-  const hs = new Int32Array(256), n = w * h; for (let i = 0; i < n; i++) hs[g[i]]++;
-  let c = 0, lo = 0, hi = 255; for (let i = 0; i < 256; i++) { c += hs[i]; if (c >= n * .02) { lo = i; break; } }
-  c = 0; for (let i = 255; i >= 0; i--) { c += hs[i]; if (c >= n * .02) { hi = i; break; } }
+  const n = w * h; HS.fill(0);
+  for (let i = 0; i < n; i += 4) HS[g[i]]++;
+  const th = ((n + 3) >> 2) * .02; let c = 0, lo = 0, hi = 255;
+  for (let i = 0; i < 256; i++) { c += HS[i]; if (c >= th) { lo = i; break; } }
+  c = 0; for (let i = 255; i >= 0; i--) { c += HS[i]; if (c >= th) { hi = i; break; } }
   if (hi - lo < 8) hi = lo + 8;
-  const tb = new Uint8Array(256), sc = 255 / (hi - lo);
-  for (let i = 0; i < 256; i++) { let v = (i - lo) * sc; v = v < 0 ? 0 : v > 255 ? 255 : v; tb[i] = 255 - lut[v | 0]; }
-  for (let i = 0; i < n; i++) val[i] = tb[g[i]];
+  const sc = 255 / (hi - lo);
+  for (let i = 0; i < 256; i++) { let v = (i - lo) * sc; v = v < 0 ? 0 : v > 255 ? 255 : v; TB[i] = 255 - lut[v | 0]; }
+  for (let i = 0; i < n; i++) val[i] = TB[g[i]];
   return 0;
 }
 function fSobel() {
-  val.fill(0); const k = S.gain * S.con * .75;
-  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-    const i = y * w + x;
-    const gx = -g[i - w - 1] + g[i - w + 1] - 2 * g[i - 1] + 2 * g[i + 1] - g[i + w - 1] + g[i + w + 1];
-    const gy = -g[i - w - 1] - 2 * g[i - w] - g[i - w + 1] + g[i + w - 1] + 2 * g[i + w] + g[i + w + 1];
-    const m = (Math.abs(gx) + Math.abs(gy)) * k; val[i] = m > 255 ? 255 : m;
+  const k = S.gain * S.con * .75; val.fill(0);
+  for (let y = 1; y < h - 1; y++) {
+    let i = y * w + 1;
+    for (let x = 1; x < w - 1; x++, i++) {
+      const a = g[i - w - 1], b = g[i - w], c = g[i - w + 1], d = g[i - 1], f = g[i + 1], p = g[i + w - 1], q = g[i + w], r = g[i + w + 1];
+      const gx = c - a + 2 * (f - d) + r - p, gy = p - a + 2 * (q - b) + r - c;
+      const m = ((gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy)) * k; val[i] = m > 255 ? 255 : m;
+    }
   }
   return 1;
 }
 function fClahe() {
   HIST.fill(0); CNT.fill(0);
-  for (let y = 0; y < h; y++) { const rb = ((y * TY / h) | 0) * TX; for (let x = 0; x < w; x++) { const t = rb + ((x * TX / w) | 0); HIST[t * 256 + g[y * w + x]]++; CNT[t]++; } }
+  for (let y = 0; y < h; y += 2) { const rb = ((y * TY / h) | 0) * TX, ro = y * w; for (let x = 0; x < w; x += 2) { const t = rb + tcol[x]; HIST[t * 256 + g[ro + x]]++; CNT[t]++; } }
   for (let t = 0; t < TX * TY; t++) {
     const b = t * 256, cnt = CNT[t] || 1, lim = Math.max(2, (CLIP * cnt / 256) | 0); let ex = 0;
     for (let i = 0; i < 256; i++) if (HIST[b + i] > lim) { ex += HIST[b + i] - lim; HIST[b + i] = lim; }
@@ -217,34 +225,34 @@ function fClahe() {
   }
   const X = grids.tx, Y = grids.ty;
   for (let y = 0; y < h; y++) {
-    const ya = Y.a[y] * TX, yb = Y.b[y] * TX, wy = Y.t[y];
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x, v = g[i], wx = X.t[x];
-      const p = TLUT[(ya + X.a[x]) * 256 + v], q = TLUT[(ya + X.b[x]) * 256 + v], r = TLUT[(yb + X.a[x]) * 256 + v], s = TLUT[(yb + X.b[x]) * 256 + v];
-      val[i] = lut[(((p + (q - p) * wx) * (1 - wy) + (r + (s - r) * wx) * wy) | 0)];
+    const ya = Y.a[y] * TX, yb = Y.b[y] * TX, wy = Y.t[y], vy = 1 - wy; let i = y * w;
+    for (let x = 0; x < w; x++, i++) {
+      const v = g[i], wx = X.t[x], xa = X.a[x], xb = X.b[x];
+      const p = TLUT[(ya + xa) * 256 + v], q = TLUT[(ya + xb) * 256 + v], r = TLUT[(yb + xa) * 256 + v], s = TLUT[(yb + xb) * 256 + v];
+      val[i] = lut[((p + (q - p) * wx) * vy + (r + (s - r) * wx) * wy) | 0];
     }
   }
   return 2;
 }
 function fAstro(d) {
-  const n = w * h, bp = new Int16Array(n), sum = new Float32Array(BX * BY), cn = new Int32Array(BX * BY);
-  const X = grids.bx, Y = grids.by, oiii = S.band === 1;
-  for (let y = 0; y < h; y++) { const by = ((y * BY / h) | 0) * BX; for (let x = 0; x < w; x++) {
-    const i = y * w + x, p = i * 4, R = d[p], G = d[p + 1], B = d[p + 2];
-    const v = oiii ? .6 * (G + B) - .7 * R : R - .45 * (G + B);
-    bp[i] = v; const bl = by + ((x * BX / w) | 0); sum[bl] += v; cn[bl]++;
-  } }
-  for (let k = 0; k < sum.length; k++) sum[k] = cn[k] ? sum[k] / cn[k] : 0;
+  const X = grids.bx, Y = grids.by, oi = S.band === 1;
+  const cr = oi ? -.7 : 1, cg = oi ? .6 : -.45;
+  BSUM.fill(0); BCN.fill(0);
   for (let y = 0; y < h; y++) {
-    const ya = Y.a[y] * BX, yb = Y.b[y] * BX, wy = Y.t[y];
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x, wx = X.t[x];
-      const p = sum[ya + X.a[x]], q = sum[ya + X.b[x]], r = sum[yb + X.a[x]], s = sum[yb + X.b[x]];
-      const bg = (p + (q - p) * wx) * (1 - wy) + (r + (s - r) * wx) * wy;
+    const bo = ((y * BY / h) | 0) * BX; let i = y * w, p = i * 4;
+    for (let x = 0; x < w; x++, i++, p += 4) { const v = cr * d[p] + cg * (d[p + 1] + d[p + 2]); bp[i] = v; const bl = bo + bcol[x]; BSUM[bl] += v; BCN[bl]++; }
+  }
+  for (let k = 0; k < BSUM.length; k++) BSUM[k] = BCN[k] ? BSUM[k] / BCN[k] : 0;
+  for (let y = 0; y < h; y++) {
+    const ya = Y.a[y] * BX, yb = Y.b[y] * BX, wy = Y.t[y], vy = 1 - wy;
+    for (let k = 0; k < BX; k++) ROWV[k] = BSUM[ya + k] * vy + BSUM[yb + k] * wy;
+    let i = y * w;
+    for (let x = 0; x < w; x++, i++) {
+      const ra = ROWV[X.a[x]], bg = ra + (ROWV[X.b[x]] - ra) * X.t[x];
       let v = (bp[i] - bg) * 2.5 + 32; v = v < 0 ? 0 : v > 255 ? 255 : v; val[i] = lut[v | 0];
     }
   }
-  return oiii ? 4 : 3;
+  return oi ? 4 : 3;
 }
 
 /* ---------- Fuente simulada (fallback sin cámara) ---------- */
@@ -264,21 +272,23 @@ function drawSim(t) {
 
 /* ---------- Render ---------- */
 function render(t) {
-  if (mode === 'cam' && (video.readyState < 2 || !video.videoWidth)) return;
+  if (mode === 'cam') {
+    if (video.readyState < 2 || !video.videoWidth) return;
+    if (RVFC && !vfNew) return;
+    vfNew = false;
+  } else { if (t - lastSim < 33) return; lastSim = t; }
   const [tw, th] = target(); if (tw !== w || th !== h) setSize(tw, th);
   const t0 = performance.now();
   if (mode === 'cam') bctx.drawImage(video, 0, 0, w, h); else drawSim(t);
-  const d = bctx.getImageData(0, 0, w, h).data, n = w * h;
-  for (let i = 0, p = 0; i < n; i++, p += 4) g[i] = (77 * d[p] + 150 * d[p + 1] + 29 * d[p + 2]) >> 8;
-  const f = S.f; let pi;
-  pi = f === 0 ? fBlackHot() : f === 1 ? fSobel() : f === 2 ? fClahe() : fAstro(d);
-  const P = PALS[pi], R = P[0], G = P[1], B = P[2];
-  for (let i = 0, p = 0; i < n; i++, p += 4) { const v = val[i]; o[p] = R[v]; o[p + 1] = G[v]; o[p + 2] = B[v]; }
+  const d = bctx.getImageData(0, 0, w, h).data, n = w * h, f = S.f;
+  if (f !== 3) for (let i = 0, p = 0; i < n; i++, p += 4) g[i] = (77 * d[p] + 150 * d[p + 1] + 29 * d[p + 2]) >> 8;
+  const P = PALS[f === 0 ? fBlackHot() : f === 1 ? fSobel() : f === 2 ? fClahe() : fAstro(d)];
+  for (let i = 0; i < n; i++) o32[i] = P[val[i]];
   vctx.putImageData(outImg, 0, 0);
   frames++;
   ema = ema * .9 + (performance.now() - t0) * .1;
   if (S.res === 3 && --cool <= 0) {
-    if (ema > 13 && autoIdx > 0) { autoIdx--; cool = 90; } else if (ema < 5 && autoIdx < 2) { autoIdx++; cool = 90; }
+    if (ema > 22 && autoIdx > 0) { autoIdx--; cool = 60; } else if (ema < 8 && autoIdx < 3) { autoIdx++; cool = 90; }
   }
 }
 function updateHud(t) {
@@ -296,6 +306,7 @@ function updateHud(t) {
 function loop(t) { requestAnimationFrame(loop); if (!frozen && mode !== 'init') render(t); updateHud(t); }
 
 /* ---------- Cámara ---------- */
+function vfLoop() { vfNew = true; video.requestVideoFrameCallback(vfLoop); }
 function stopCam() { if (stream) { stream.getTracks().forEach(tr => tr.stop()); stream = null; } video.srcObject = null; }
 function camError(e) {
   const n = e && e.name; let m;
@@ -312,6 +323,7 @@ async function startCam() {
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('insecure');
     stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, min: 24 } } });
     video.srcObject = stream; await video.play();
+    if (RVFC && !vfOn) { vfOn = true; video.requestVideoFrameCallback(vfLoop); }
     stream.getVideoTracks()[0].addEventListener('ended', () => { if (mode === 'cam') { mode = 'sim'; chip('stCam', 'bad', 'CAM PERDIDA'); banner('La cámara se desconectó. Modo simulación activo.'); } });
     mode = 'cam'; chip('stCam', 'ok live', 'CAM LIVE'); $('bCam').textContent = 'USAR SIMULACIÓN';
     try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {}); } catch (e) { /* opcional */ }
