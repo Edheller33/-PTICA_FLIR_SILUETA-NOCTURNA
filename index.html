@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self' data:; connect-src 'self' data: blob:">
+<title>FLIR &amp; Night Silhouette Optic PWA</title>
+<!-- Manifest inline (Data URI), construido y codificado al arrancar -->
+<script>
+(function () {
+  'use strict';
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#000"/><circle cx="256" cy="256" r="150" fill="none" stroke="#ffb000" stroke-width="20"/><path d="M256 60v90M256 362v90M60 256h90M362 256h90" stroke="#7dff6a" stroke-width="20"/><circle cx="256" cy="256" r="16" fill="#ffb000"/></svg>';
+  var m = {
+    name: 'FLIR & Night Silhouette Optic', short_name: 'NightOptic',
+    start_url: '.', scope: '.', display: 'fullscreen', orientation: 'any',
+    background_color: '#000000', theme_color: '#000000', lang: 'es',
+    icons: [{ src: 'data:image/svg+xml,' + encodeURIComponent(svg), sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
+  };
+  var l = document.createElement('link');
+  l.rel = 'manifest';
+  l.href = 'data:application/manifest+json,' + encodeURIComponent(JSON.stringify(m));
+  document.head.appendChild(l);
+})();
+</script>
+<style>
+:root{--amb:#ffb000;--grn:#7dff6a;--red:#ff5a2a;--bg:#000;--pan:rgba(8,6,0,.9);--dim:#8a6a1a;--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--amb);overflow:hidden;overscroll-behavior:none;touch-action:manipulation;font:13px/1.35 ui-monospace,"Roboto Mono","Courier New",monospace}
+#stage{position:fixed;inset:0;background:#000}
+#view{width:100%;height:100%;display:block;object-fit:cover;background:#000}
+#cam{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+#hud{position:fixed;inset:0;pointer-events:none}
+#top{position:absolute;left:0;right:0;top:0;padding:calc(8px + var(--sat)) 10px 8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:space-between;background:linear-gradient(#000c,#0000)}
+.chip{pointer-events:auto;border:1px solid var(--dim);padding:3px 8px;min-height:26px;display:inline-flex;align-items:center;gap:6px;color:var(--amb);background:#000a;font:inherit}
+.chip i{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block}
+.chip.ok{color:var(--grn);border-color:var(--grn)}.chip.ok i{background:var(--grn)}
+.chip.bad{color:var(--red);border-color:var(--red)}.chip.bad i{background:var(--red)}
+.chip.live i{animation:bl 1.2s steps(2,end) infinite}
+@keyframes bl{50%{opacity:.15}}
+@media (prefers-reduced-motion:reduce){.chip.live i{animation:none}#panel{transition:none!important}}
+#ret{position:absolute;left:50%;top:46%;width:min(70vw,300px);aspect-ratio:1;transform:translate(-50%,-50%);overflow:visible}
+#ret *{vector-effect:non-scaling-stroke}
+#read{position:absolute;left:10px;right:10px;bottom:calc(64px + var(--sab));display:flex;justify-content:space-between;font-size:12px;text-shadow:0 0 4px #000}
+#filt{position:absolute;left:0;right:0;top:calc(76px + var(--sat));text-align:center;color:var(--grn);text-shadow:0 0 4px #000;letter-spacing:.12em}
+#banner{position:fixed;left:10px;right:10px;top:calc(110px + var(--sat));background:#140a00ee;border:1px solid var(--red);color:#ffd9a0;padding:10px 12px;display:none;pointer-events:auto}
+#banner.show{display:block}
+#toast{position:fixed;left:50%;bottom:calc(120px + var(--sab));transform:translateX(-50%);background:#000d;border:1px solid var(--grn);color:var(--grn);padding:6px 12px;display:none;max-width:90vw;text-align:center}
+#toast.show{display:block}
+#panel{position:fixed;left:0;right:0;bottom:0;background:var(--pan);border-top:1px solid var(--amb);padding-bottom:var(--sab);transition:transform .25s ease;transform:translateY(calc(100% - 48px - var(--sab)));max-height:75vh;overflow:auto}
+#panel.open{transform:none}
+#grip{width:100%;min-height:48px;background:none;border:0;color:var(--amb);font:inherit;letter-spacing:.2em;display:flex;align-items:center;justify-content:center;gap:12px}
+#grip span{width:40px;height:4px;background:var(--amb);display:block;border-radius:2px}
+#pbody{padding:2px 14px 14px;display:grid;gap:12px;max-width:640px;margin:0 auto}
+#filters{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button.btn,select{min-height:48px;background:#120c00;color:var(--amb);border:1px solid var(--dim);font:inherit;padding:6px 8px}
+button.btn[aria-pressed="true"]{color:#000;background:var(--amb);border-color:var(--amb)}
+button.btn:focus-visible,select:focus-visible,input:focus-visible,#grip:focus-visible,.chip:focus-visible{outline:2px solid var(--grn);outline-offset:2px}
+label{display:grid;gap:4px}
+label span{display:flex;justify-content:space-between}
+input[type=range]{width:100%;height:32px;accent-color:var(--amb)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="view" aria-label="Vista procesada de la cámara"></canvas>
+  <video id="cam" playsinline muted autoplay></video>
+</div>
+<div id="hud" aria-hidden="false">
+  <div id="top">
+    <button class="chip" id="stSw" type="button"><i></i><span>SW…</span></button>
+    <span class="chip" id="stCam"><i></i><span>CAM OFF</span></span>
+    <span class="chip" id="stFps"><i></i><span>FPS --</span></span>
+  </div>
+  <div id="filt"></div>
+  <svg id="ret" viewBox="-100 -100 200 200" stroke="#7dff6a" stroke-width="1.5" fill="none" aria-hidden="true">
+    <circle r="34" opacity=".8"/>
+    <path d="M0-34v-14M0 34v14M-34 0h-14M34 0h14M0-6v-6M0 6v6M-6 0h-6M6 0h6" />
+    <circle r="1.6" fill="#7dff6a"/>
+    <g id="hz" stroke="#ffb000"><path d="M-95 0h-45M-80 0h-0M-95 0H-52M52 0h43"/><path d="M-95-4v8M95-4v8"/></g>
+  </svg>
+  <div id="read"><span id="rdA">INC +0.0° ROL +0.0°</span><span id="rdB">ORI 000°</span></div>
+</div>
+<div id="banner" role="alert"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<section id="panel" class="open" aria-label="Panel de control">
+  <button id="grip" type="button" aria-expanded="true" aria-controls="pbody"><span></span>CONTROLES<span></span></button>
+  <div id="pbody">
+    <div id="filters" role="group" aria-label="Filtro de visualización"></div>
+    <label for="gain"><span>GANANCIA <output id="oGain"></output></span><input id="gain" type="range" min="0.4" max="3" step="0.05"></label>
+    <label for="con"><span>CONTRASTE <output id="oCon"></output></span><input id="con" type="range" min="0.5" max="3" step="0.05"></label>
+    <label for="res"><span>RESOLUCIÓN DE PROCESADO <output id="oRes"></output></span><select id="res"></select></label>
+    <div class="row"><button class="btn" id="bFreeze" type="button" aria-pressed="false">CONGELAR</button><button class="btn" id="bCap" type="button">CAPTURAR PNG</button></div>
+    <div class="row"><button class="btn" id="bCam" type="button">REINTENTAR CÁMARA</button><button class="btn" id="bSw" type="button">EXPORTAR sw.js</button></div>
+  </div>
+</section>
+
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const KEY = 'nightoptic.v1';
+const view = $('view'), vctx = view.getContext('2d', { alpha: false });
+const buf = document.createElement('canvas'), bctx = buf.getContext('2d', { willReadFrequently: true });
+const video = $('cam');
+
+const FILTERS = ['BLACK HOT', 'SOBEL SILUETAS', 'CLAHE', 'ASTRO Hα'];
+const RES = [{ n: 'BAJA 320', s: 320 }, { n: 'MEDIA 480', s: 480 }, { n: 'ALTA 640', s: 640 }, { n: 'AUTO', s: 0 }];
+
+/* ---------- Estado y persistencia local ---------- */
+function load() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { /* almacenamiento no disponible */ } }
+const S = Object.assign({ f: 0, gain: 1, con: 1.2, res: 3, band: 0 }, load());
+S.f = Math.min(Math.max(S.f | 0, 0), 3); S.res = Math.min(Math.max(S.res | 0, 0), 3); S.band = S.band ? 1 : 0;
+S.gain = Math.min(Math.max(+S.gain || 1, 0.4), 3); S.con = Math.min(Math.max(+S.con || 1.2, 0.5), 3);
+
+let mode = 'init', frozen = false, stream = null, w = 0, h = 0, autoIdx = 1, ema = 8, cool = 0;
+let g, val, outImg, o, lut = new Uint8Array(256), grids = null;
+let frames = 0, fpsT = performance.now(), fpsV = 0, sensor = false, orient = { p: 0, r: 0, a: 0 }, lastHud = 0;
+
+/* ---------- Utilidades de UI ---------- */
+let toastT = 0;
+function toast(m) { const t = $('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 3200); }
+function banner(m) { const b = $('banner'); if (!m) { b.classList.remove('show'); return; } b.textContent = m; b.classList.add('show'); }
+$('banner').addEventListener('click', () => banner(''));
+function chip(id, cls, txt) { const e = $(id); e.className = 'chip' + (cls ? ' ' + cls : ''); e.lastElementChild.textContent = txt; }
+
+/* ---------- Service Worker (Cache-First) ---------- */
+const SW_SRC = "const C='nightoptic-v1';const A=['./','./index.html'];" +
+  "self.addEventListener('install',e=>{e.waitUntil(caches.open(C).then(c=>c.addAll(A)).catch(()=>{}).then(()=>self.skipWaiting()));});" +
+  "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==C).map(x=>caches.delete(x)))).then(()=>self.clients.claim()));});" +
+  "self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(caches.match(e.request,{ignoreSearch:true}).then(h=>h||fetch(e.request).then(r=>{if(r&&r.ok&&new URL(e.request.url).origin===self.location.origin){const cp=r.clone();caches.open(C).then(c=>c.put(e.request,cp));}return r;}).catch(()=>e.request.mode==='navigate'?caches.match('./index.html'):Response.error())));});";
+let swState = 'init';
+async function regSW() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) { swState = 'nd'; chip('stSw', 'bad', 'SW N/D'); return; }
+  let reg = null, via = '';
+  try {
+    reg = await navigator.serviceWorker.register(URL.createObjectURL(new Blob([SW_SRC], { type: 'text/javascript' })));
+    via = 'blob';
+  } catch (e1) {
+    try { reg = await navigator.serviceWorker.register('./sw.js'); via = 'sw.js'; }
+    catch (e2) { swState = 'off'; chip('stSw', 'bad', 'OFFLINE LIMITADO'); return; }
+  }
+  try { await navigator.serviceWorker.ready; swState = 'ok:' + via; chip('stSw', 'ok', 'OFFLINE READY'); }
+  catch (e) { swState = 'off'; chip('stSw', 'bad', 'OFFLINE LIMITADO'); }
+}
+$('stSw').addEventListener('click', () => {
+  if (swState === 'off') toast('Este navegador rechaza el SW por Blob. Toca EXPORTAR sw.js y súbelo junto a index.html.');
+  else if (swState.indexOf('ok') === 0) toast('Service Worker activo (' + swState.slice(3) + '). Caché Cache-First.');
+  else if (swState === 'nd') toast('Service Worker requiere HTTPS (GitHub Pages).');
+});
+function download(blob, name) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+$('bSw').addEventListener('click', () => { download(new Blob([SW_SRC], { type: 'text/javascript' }), 'sw.js'); toast('sw.js exportado'); });
+
+/* ---------- Paletas y LUT ---------- */
+function pal(r, gg, b) { const t = [new Uint8Array(256), new Uint8Array(256), new Uint8Array(256)]; for (let i = 0; i < 256; i++) { t[0][i] = i * r; t[1][i] = i * gg; t[2][i] = i * b; } return t; }
+const PALS = [pal(1, .94, .72), pal(1, .69, 0), pal(.45, 1, .4), pal(1, .28, .1), pal(.2, 1, .7)];
+function buildLut() {
+  for (let i = 0; i < 256; i++) { const v = ((i / 255 - .5) * S.con + .5) * S.gain * 255; lut[i] = v < 0 ? 0 : v > 255 ? 255 : v; }
+}
+
+/* ---------- Rejillas bilineales y buffers ---------- */
+function mkGrid(n, N) {
+  const a = new Int16Array(n), b = new Int16Array(n), t = new Float32Array(n);
+  for (let p = 0; p < n; p++) { let f = (p + .5) * N / n - .5; if (f < 0) f = 0; let i = Math.floor(f); if (i > N - 1) i = N - 1; a[p] = i; b[p] = Math.min(i + 1, N - 1); t[p] = f - i; }
+  return { a, b, t };
+}
+const TX = 8, TY = 6, BX = 16, BY = 12, CLIP = 3;
+const HIST = new Int32Array(TX * TY * 256), CNT = new Int32Array(TX * TY), TLUT = new Uint8Array(TX * TY * 256);
+function setSize(nw, nh) {
+  w = nw; h = nh; buf.width = w; buf.height = h; view.width = w; view.height = h;
+  g = new Uint8Array(w * h); val = new Uint8Array(w * h); outImg = new ImageData(w, h); o = outImg.data;
+  for (let i = 3; i < o.length; i += 4) o[i] = 255;
+  grids = { tx: mkGrid(w, TX), ty: mkGrid(h, TY), bx: mkGrid(w, BX), by: mkGrid(h, BY) };
+}
+function target() {
+  const vw = (mode === 'cam' && video.videoWidth) || 640, vh = (mode === 'cam' && video.videoHeight) || 480;
+  const long = S.res === 3 ? RES[autoIdx].s : RES[S.res].s, k = long / Math.max(vw, vh);
+  return [Math.max(16, Math.round(vw * k)), Math.max(16, Math.round(vh * k))];
+}
+
+/* ---------- Filtros ---------- */
+function fBlackHot() {
+  const hs = new Int32Array(256), n = w * h; for (let i = 0; i < n; i++) hs[g[i]]++;
+  let c = 0, lo = 0, hi = 255; for (let i = 0; i < 256; i++) { c += hs[i]; if (c >= n * .02) { lo = i; break; } }
+  c = 0; for (let i = 255; i >= 0; i--) { c += hs[i]; if (c >= n * .02) { hi = i; break; } }
+  if (hi - lo < 8) hi = lo + 8;
+  const tb = new Uint8Array(256), sc = 255 / (hi - lo);
+  for (let i = 0; i < 256; i++) { let v = (i - lo) * sc; v = v < 0 ? 0 : v > 255 ? 255 : v; tb[i] = 255 - lut[v | 0]; }
+  for (let i = 0; i < n; i++) val[i] = tb[g[i]];
+  return 0;
+}
+function fSobel() {
+  val.fill(0); const k = S.gain * S.con * .75;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    const gx = -g[i - w - 1] + g[i - w + 1] - 2 * g[i - 1] + 2 * g[i + 1] - g[i + w - 1] + g[i + w + 1];
+    const gy = -g[i - w - 1] - 2 * g[i - w] - g[i - w + 1] + g[i + w - 1] + 2 * g[i + w] + g[i + w + 1];
+    const m = (Math.abs(gx) + Math.abs(gy)) * k; val[i] = m > 255 ? 255 : m;
+  }
+  return 1;
+}
+function fClahe() {
+  HIST.fill(0); CNT.fill(0);
+  for (let y = 0; y < h; y++) { const rb = ((y * TY / h) | 0) * TX; for (let x = 0; x < w; x++) { const t = rb + ((x * TX / w) | 0); HIST[t * 256 + g[y * w + x]]++; CNT[t]++; } }
+  for (let t = 0; t < TX * TY; t++) {
+    const b = t * 256, cnt = CNT[t] || 1, lim = Math.max(2, (CLIP * cnt / 256) | 0); let ex = 0;
+    for (let i = 0; i < 256; i++) if (HIST[b + i] > lim) { ex += HIST[b + i] - lim; HIST[b + i] = lim; }
+    const add = ex / 256; let cd = 0;
+    for (let i = 0; i < 256; i++) { cd += HIST[b + i] + add; TLUT[b + i] = Math.min(255, Math.round(cd * 255 / cnt)); }
+  }
+  const X = grids.tx, Y = grids.ty;
+  for (let y = 0; y < h; y++) {
+    const ya = Y.a[y] * TX, yb = Y.b[y] * TX, wy = Y.t[y];
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, v = g[i], wx = X.t[x];
+      const p = TLUT[(ya + X.a[x]) * 256 + v], q = TLUT[(ya + X.b[x]) * 256 + v], r = TLUT[(yb + X.a[x]) * 256 + v], s = TLUT[(yb + X.b[x]) * 256 + v];
+      val[i] = lut[(((p + (q - p) * wx) * (1 - wy) + (r + (s - r) * wx) * wy) | 0)];
+    }
+  }
+  return 2;
+}
+function fAstro(d) {
+  const n = w * h, bp = new Int16Array(n), sum = new Float32Array(BX * BY), cn = new Int32Array(BX * BY);
+  const X = grids.bx, Y = grids.by, oiii = S.band === 1;
+  for (let y = 0; y < h; y++) { const by = ((y * BY / h) | 0) * BX; for (let x = 0; x < w; x++) {
+    const i = y * w + x, p = i * 4, R = d[p], G = d[p + 1], B = d[p + 2];
+    const v = oiii ? .6 * (G + B) - .7 * R : R - .45 * (G + B);
+    bp[i] = v; const bl = by + ((x * BX / w) | 0); sum[bl] += v; cn[bl]++;
+  } }
+  for (let k = 0; k < sum.length; k++) sum[k] = cn[k] ? sum[k] / cn[k] : 0;
+  for (let y = 0; y < h; y++) {
+    const ya = Y.a[y] * BX, yb = Y.b[y] * BX, wy = Y.t[y];
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x, wx = X.t[x];
+      const p = sum[ya + X.a[x]], q = sum[ya + X.b[x]], r = sum[yb + X.a[x]], s = sum[yb + X.b[x]];
+      const bg = (p + (q - p) * wx) * (1 - wy) + (r + (s - r) * wx) * wy;
+      let v = (bp[i] - bg) * 2.5 + 32; v = v < 0 ? 0 : v > 255 ? 255 : v; val[i] = lut[v | 0];
+    }
+  }
+  return oiii ? 4 : 3;
+}
+
+/* ---------- Fuente simulada (fallback sin cámara) ---------- */
+function drawSim(t) {
+  const gr = bctx.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#26323d'); gr.addColorStop(1, '#07090c');
+  bctx.fillStyle = gr; bctx.fillRect(0, 0, w, h);
+  for (let k = 0; k < 5; k++) {
+    const x = w * (.12 + .19 * k), y = h * .22 + Math.sin(t / 900 + k) * 6, rg = bctx.createRadialGradient(x, y, 1, x, y, w * .12);
+    rg.addColorStop(0, 'rgba(255,200,120,.95)'); rg.addColorStop(1, 'rgba(255,160,60,0)'); bctx.fillStyle = rg; bctx.fillRect(x - w * .13, y - w * .13, w * .26, w * .26);
+  }
+  const cx = w * (.5 + .2 * Math.sin(t / 2200)), s = h / 480;
+  bctx.fillStyle = '#04060a'; bctx.beginPath(); bctx.arc(cx, h * .45, 26 * s, 0, 7); bctx.fill();
+  bctx.fillRect(cx - 40 * s, h * .45 + 26 * s, 80 * s, 170 * s);
+  bctx.fillRect(cx - 28 * s, h * .45 + 190 * s, 22 * s, 120 * s); bctx.fillRect(cx + 6 * s, h * .45 + 190 * s, 22 * s, 120 * s);
+  for (let k = 0; k < 40; k++) { const v = 40 + Math.random() * 90 | 0; bctx.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')'; bctx.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5); }
+}
+
+/* ---------- Render ---------- */
+function render(t) {
+  if (mode === 'cam' && (video.readyState < 2 || !video.videoWidth)) return;
+  const [tw, th] = target(); if (tw !== w || th !== h) setSize(tw, th);
+  const t0 = performance.now();
+  if (mode === 'cam') bctx.drawImage(video, 0, 0, w, h); else drawSim(t);
+  const d = bctx.getImageData(0, 0, w, h).data, n = w * h;
+  for (let i = 0, p = 0; i < n; i++, p += 4) g[i] = (77 * d[p] + 150 * d[p + 1] + 29 * d[p + 2]) >> 8;
+  const f = S.f; let pi;
+  pi = f === 0 ? fBlackHot() : f === 1 ? fSobel() : f === 2 ? fClahe() : fAstro(d);
+  const P = PALS[pi], R = P[0], G = P[1], B = P[2];
+  for (let i = 0, p = 0; i < n; i++, p += 4) { const v = val[i]; o[p] = R[v]; o[p + 1] = G[v]; o[p + 2] = B[v]; }
+  vctx.putImageData(outImg, 0, 0);
+  frames++;
+  ema = ema * .9 + (performance.now() - t0) * .1;
+  if (S.res === 3 && --cool <= 0) {
+    if (ema > 13 && autoIdx > 0) { autoIdx--; cool = 90; } else if (ema < 5 && autoIdx < 2) { autoIdx++; cool = 90; }
+  }
+}
+function updateHud(t) {
+  const now = performance.now();
+  if (now - fpsT >= 500) { fpsV = frames * 1000 / (now - fpsT); frames = 0; fpsT = now; chip('stFps', fpsV < 24 && !frozen && mode !== 'init' ? 'bad' : '', frozen ? 'FPS --' : 'FPS ' + fpsV.toFixed(0) + ' · ' + w + '×' + h); }
+  if (now - lastHud < 80) return; lastHud = now;
+  let p = orient.p, r = orient.r, a = orient.a, tag = '';
+  if (!sensor) { p = 6 * Math.sin(t / 2300); r = 4 * Math.sin(t / 1700); a = (t / 200) % 360; tag = ' SIM'; }
+  const cl = (v, m) => v < -m ? -m : v > m ? m : v;
+  $('hz').setAttribute('transform', 'rotate(' + (-cl(r, 45)).toFixed(1) + ') translate(0 ' + (cl(p, 30) * 1.6).toFixed(1) + ')');
+  const sg = v => (v >= 0 ? '+' : '') + v.toFixed(1);
+  $('rdA').textContent = 'INC ' + sg(p) + '° ROL ' + sg(r) + '°';
+  $('rdB').textContent = 'ORI ' + String(Math.round(a) % 360).padStart(3, '0') + '°' + tag;
+}
+function loop(t) { requestAnimationFrame(loop); if (!frozen && mode !== 'init') render(t); updateHud(t); }
+
+/* ---------- Cámara ---------- */
+function stopCam() { if (stream) { stream.getTracks().forEach(tr => tr.stop()); stream = null; } video.srcObject = null; }
+function camError(e) {
+  const n = e && e.name; let m;
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) m = 'La cámara requiere HTTPS (GitHub Pages) o localhost.';
+  else if (n === 'NotAllowedError' || n === 'SecurityError') m = 'Permiso de cámara denegado. Actívalo en los ajustes del sitio y toca REINTENTAR CÁMARA.';
+  else if (n === 'NotFoundError' || n === 'OverconstrainedError') m = 'No se encontró una cámara compatible.';
+  else if (n === 'NotReadableError') m = 'La cámara está en uso por otra aplicación.';
+  else m = 'No se pudo iniciar la cámara (' + (n || 'error') + ').';
+  banner(m + ' Modo simulación activo: los filtros y controles siguen funcionando.');
+}
+async function startCam() {
+  stopCam(); banner('');
+  try {
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('insecure');
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, min: 24 } } });
+    video.srcObject = stream; await video.play();
+    stream.getVideoTracks()[0].addEventListener('ended', () => { if (mode === 'cam') { mode = 'sim'; chip('stCam', 'bad', 'CAM PERDIDA'); banner('La cámara se desconectó. Modo simulación activo.'); } });
+    mode = 'cam'; chip('stCam', 'ok live', 'CAM LIVE'); $('bCam').textContent = 'USAR SIMULACIÓN';
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(() => {}); } catch (e) { /* opcional */ }
+  } catch (e) {
+    stopCam(); mode = 'sim'; chip('stCam', 'bad', 'SIMULACIÓN'); $('bCam').textContent = 'REINTENTAR CÁMARA'; camError(e);
+  }
+}
+$('bCam').addEventListener('click', () => {
+  if (mode === 'cam') { stopCam(); mode = 'sim'; chip('stCam', 'bad', 'SIMULACIÓN'); $('bCam').textContent = 'REINTENTAR CÁMARA'; banner(''); }
+  else startCam();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (mode === 'cam') { stopCam(); mode = 'pause'; } }
+  else if (mode === 'pause') startCam();
+});
+
+/* ---------- Orientación ---------- */
+function onOri(e) { if (e.beta == null) return; sensor = true; orient.p = e.beta - 90; orient.r = e.gamma || 0; orient.a = e.alpha || 0; }
+window.addEventListener('deviceorientation', onOri);
+let oriAsked = false;
+document.addEventListener('click', () => {
+  if (oriAsked) return; oriAsked = true;
+  if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') DeviceOrientationEvent.requestPermission().catch(() => {});
+}, { once: false });
+
+/* ---------- Controles ---------- */
+const fbox = $('filters'), fbtn = [];
+FILTERS.forEach((nm, i) => {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'btn'; b.textContent = nm;
+  b.addEventListener('click', () => {
+    if (i === 3 && S.f === 3) S.band = S.band ? 0 : 1; S.f = i; save(); sync();
+  });
+  fbox.appendChild(b); fbtn.push(b);
+});
+const sel = $('res'); RES.forEach((r, i) => { const op = document.createElement('option'); op.value = i; op.textContent = r.n; sel.appendChild(op); });
+function sync() {
+  fbtn.forEach((b, i) => b.setAttribute('aria-pressed', i === S.f ? 'true' : 'false'));
+  fbtn[3].textContent = S.f === 3 && S.band ? 'ASTRO OIII' : 'ASTRO Hα';
+  $('filt').textContent = (S.f === 3 ? (S.band ? 'ASTRO OIII' : 'ASTRO Hα') : FILTERS[S.f]) + (frozen ? ' · CONGELADO' : '');
+  $('gain').value = S.gain; $('con').value = S.con; sel.value = S.res;
+  $('oGain').textContent = S.gain.toFixed(2) + '×'; $('oCon').textContent = S.con.toFixed(2) + '×'; $('oRes').textContent = w ? w + '×' + h : '';
+  buildLut();
+}
+$('gain').addEventListener('input', e => { S.gain = +e.target.value; save(); sync(); });
+$('con').addEventListener('input', e => { S.con = +e.target.value; save(); sync(); });
+sel.addEventListener('change', e => { S.res = +e.target.value; save(); sync(); });
+$('bFreeze').addEventListener('click', e => { frozen = !frozen; e.currentTarget.setAttribute('aria-pressed', frozen ? 'true' : 'false'); e.currentTarget.textContent = frozen ? 'REANUDAR' : 'CONGELAR'; sync(); });
+$('bCap').addEventListener('click', () => {
+  if (!w) { toast('Aún no hay fotograma'); return; }
+  view.toBlob(b => {
+    if (!b) { toast('No se pudo generar el PNG'); return; }
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    download(b, 'optic-' + ['blackhot', 'sobel', 'clahe', S.band ? 'oiii' : 'ha'][S.f] + '-' + ts + '.png'); toast('PNG guardado');
+  }, 'image/png');
+});
+
+/* ---------- Panel deslizable ---------- */
+const panel = $('panel'), grip = $('grip');
+function setOpen(v) { panel.classList.toggle('open', v); grip.setAttribute('aria-expanded', v ? 'true' : 'false'); }
+grip.addEventListener('click', () => setOpen(!panel.classList.contains('open')));
+let y0 = null;
+grip.addEventListener('pointerdown', e => { y0 = e.clientY; });
+grip.addEventListener('pointerup', e => { if (y0 === null) return; const dy = e.clientY - y0; y0 = null; if (dy > 30) setOpen(false); else if (dy < -30) setOpen(true); });
+grip.addEventListener('pointercancel', () => { y0 = null; });
+
+/* ---------- Arranque ---------- */
+sync(); setSize(320, 240); chip('stFps', '', 'FPS --');
+requestAnimationFrame(loop);
+regSW();
+startCam().then(sync);
+})();
+</script>
+</body>
+</html>
